@@ -1,0 +1,8 @@
+ai_models:
+  routing:
+    default_strategy: "cloud_first"
+    fallback_cloud: "deepseek"
+analysis:
+  manual:
+    default_mode: "comprehensive"
+    max_concurrent_tasks: 5
