@@ -3,6 +3,7 @@ from typing import List, Optional
 import json
 import datetime
 import os
+from pathlib import Path
 
 from backend.services.data_fetcher import FreeDataFetcher
 from backend.ai_adapter.cloud_adapters import DeepSeekAdapter, GeminiAdapter
@@ -12,6 +13,25 @@ from backend.db.models import AnalysisResult
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 fetcher = FreeDataFetcher()
+
+def _load_local_env_file():
+    """在未注入系统环境变量时，兜底读取项目根目录 .env。"""
+    env_path = Path(__file__).resolve().parents[3] / ".env"
+    if not env_path.exists():
+        return
+
+    for line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k = k.strip()
+        if k and k not in os.environ:
+            os.environ[k] = v.strip().strip('"').strip("'")
+
+
+_load_local_env_file()
+
 
 def save_analysis_to_db(symbol: str, model: str, result_obj: StockAnalysisResult):
     """
@@ -51,14 +71,32 @@ async def run_single_stock_analysis(symbol: str, model: str):
     try:
         if model == "gemini":
             api_key = os.getenv("GEMINI_API_KEY", "")
+            if not api_key:
+                print("❗ 未配置 GEMINI_API_KEY，已跳过分析")
+                return
             adapter = GeminiAdapter(api_key=api_key)
         else:
-            # 兼容 DEEPSEEK_API_KEY 或火山引擎的 ARK_API_KEY
-            api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("ARK_API_KEY") or ""
-            adapter = DeepSeekAdapter(api_key=api_key)
-            
-        if not api_key:
-            print(f"❗ 警告: 未检测到 {model} 的有效 API KEY，请检查 .env 文件")
+            # DeepSeek 直连 与 火山方舟二选一，优先使用 ARK_API_KEY
+            ark_api_key = os.getenv("ARK_API_KEY", "")
+            deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", "")
+
+            if ark_api_key:
+                api_key = ark_api_key
+                adapter = DeepSeekAdapter(
+                    api_key=api_key,
+                    model=os.getenv("ARK_MODEL", "deepseek-v3-2-251201"),
+                    base_url=os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
+                )
+            elif deepseek_api_key:
+                api_key = deepseek_api_key
+                adapter = DeepSeekAdapter(
+                    api_key=api_key,
+                    model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                    base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+                )
+            else:
+                print("❗ 未配置 DEEPSEEK_API_KEY 或 ARK_API_KEY，已跳过分析")
+                return
     except Exception as e:
         print(f"❌ AI 引擎初始化失败: {e}")
         return

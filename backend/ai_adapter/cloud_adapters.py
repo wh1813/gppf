@@ -5,13 +5,13 @@ import base64
 from .base import BaseAIAdapter, StockAnalysisRequest, StockAnalysisResult
 
 class DeepSeekAdapter(BaseAIAdapter):
-    def __init__(self, api_key: str, model: str = "deepseek-v3-2-251201"):
-        # 【核心修改】：替换为火山引擎的代理地址和模型名称
+    def __init__(self, api_key: str, model: str = "deepseek-chat", base_url: str = "https://api.deepseek.com/v1"):
         self.client = AsyncOpenAI(
             api_key=api_key, 
-            base_url="https://ark.cn-beijing.volces.com/api/v3"
+            base_url=base_url
         )
         self.model_name = model
+        self.provider_name = "Volc-DeepSeek-V3" if "ark.cn-beijing.volces.com" in base_url else "DeepSeek"
     
     async def analyze(self, request: StockAnalysisRequest) -> StockAnalysisResult:
         messages = [
@@ -28,9 +28,9 @@ class DeepSeekAdapter(BaseAIAdapter):
                 max_tokens=1500
             )
             raw_content = response.choices[0].message.content
-            return self._parse_response(raw_content, request.symbol, "Volc-DeepSeek-V3")
+            return self._parse_response(raw_content, request.symbol, self.provider_name)
         except Exception as e:
-            print(f"火山引擎 DeepSeek 调用失败: {e}")
+            print(f"DeepSeek 调用失败: {e}")
             raise e
 
 class GeminiAdapter(BaseAIAdapter):
