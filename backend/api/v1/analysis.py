@@ -1,4 +1,5 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException
+from pydantic import BaseModel
 from typing import List, Optional
 import json
 import datetime
@@ -13,89 +14,71 @@ from backend.db.models import AnalysisResult
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 fetcher = FreeDataFetcher()
 
+class TriggerRequest(BaseModel):
+    api_key: Optional[str] = None
+    custom_prompt: Optional[str] = None # 新增字段
+
 def save_analysis_to_db(symbol: str, model: str, result_obj: StockAnalysisResult):
-    """
-    将 AI 的研判结果持久化到数据库。
-    🌟 核心：严格适配 models.py 中的 'result' 字段名。
-    """
     db = SessionLocal()
     try:
         new_record = AnalysisResult(
             symbol=symbol,
             model_name=model,
-            result=result_obj.model_dump_json(), # 存储为序列化后的 JSON 字符串
+            result=result_obj.model_dump_json(),
             created_at=datetime.datetime.now()
         )
         db.add(new_record)
         db.commit()
     except Exception as e:
-        print(f"❌ 数据库写入错误: {e}")
         db.rollback()
     finally:
         db.close()
 
-async def run_single_stock_analysis(symbol: str, model: str):
-    """
-    后台执行的 AI 分析主逻辑：
-    1. 抓取行情 -> 2. 调用 AI 引擎 -> 3. 结果入库
-    """
+async def run_single_stock_analysis(symbol: str, model: str, frontend_api_key: str = None, custom_prompt: str = None):
     print(f"🚀 AI 推演任务启动: {symbol} 模型: {model}")
     
-    # 获取最近 30 天行情及技术指标
     df = fetcher.fetch_historical_kline(symbol)
     if df.empty:
-        print(f"⚠️ 无法获取股票 {symbol} 的行情数据")
         return
 
-    # 初始化 AI 适配器并注入 API KEY
     try:
         if model == "gemini":
-            api_key = os.getenv("GEMINI_API_KEY", "")
+            api_key = frontend_api_key or os.getenv("GEMINI_API_KEY", "")
             adapter = GeminiAdapter(api_key=api_key)
         else:
-            # 兼容 DEEPSEEK_API_KEY 或火山引擎的 ARK_API_KEY
-            api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("ARK_API_KEY") or ""
+            fallback_key = "ae34c09f-5bd2-40b7-9a03-941839441d26"
+            api_key = frontend_api_key or os.getenv("ARK_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or fallback_key
             adapter = DeepSeekAdapter(api_key=api_key)
             
-        if not api_key:
-            print(f"❗ 警告: 未检测到 {model} 的有效 API KEY，请检查 .env 文件")
-    except Exception as e:
-        print(f"❌ AI 引擎初始化失败: {e}")
-        return
+        if not api_key: return
+            
+    except Exception as e: return
 
-    # 执行分析与推演
     try:
-        # 构造 Pydantic 请求对象，market_data 字段名必须与 base.py 一致
+        # 将用户的自定义提示词传入 Request
         request = StockAnalysisRequest(
             symbol=symbol, 
-            market_data=df.to_dict('records')
+            market_data=df.to_dict('records'),
+            custom_prompt=custom_prompt 
         )
-        
         result = await adapter.analyze(request)
-        
-        # 结果持久化入库
         save_analysis_to_db(symbol, model, result)
         print(f"✅ [{symbol}] 实盘研判任务圆满完成。")
     except Exception as e:
         print(f"❌ [{symbol}] AI 分析过程异常: {e}")
 
 @router.post("/trigger/{symbol}")
-async def trigger_analysis(symbol: str, background_tasks: BackgroundTasks, model: str = "deepseek"):
-    """
-    前端点击“重新分析”时调用的接口（后台异步执行任务）
-    """
-    if not symbol:
-        raise HTTPException(status_code=400, detail="股票代码不能为空")
+async def trigger_analysis(symbol: str, background_tasks: BackgroundTasks, req: TriggerRequest = None, model: str = "deepseek"):
+    if not symbol: raise HTTPException(status_code=400, detail="股票代码不能为空")
         
-    background_tasks.add_task(run_single_stock_analysis, symbol, model)
-    return {"status": "success", "message": f"分析任务已在后台启动: {symbol}"}
+    api_key = req.api_key if req else None
+    custom_prompt = req.custom_prompt if req else None
+    
+    background_tasks.add_task(run_single_stock_analysis, symbol, model, api_key, custom_prompt)
+    return {"status": "success", "message": f"分析任务已启动"}
 
 @router.get("/history/{symbol}")
 async def get_analysis_history(symbol: str, limit: int = 10):
-    """
-    获取该股票的历史研判报告。
-    🌟 核心：使用 id 排序最稳健，字段名匹配 'result'。
-    """
     db = SessionLocal()
     try:
         records = db.query(AnalysisResult).filter(
@@ -104,21 +87,13 @@ async def get_analysis_history(symbol: str, limit: int = 10):
         
         history_list = []
         for r in records:
-            # 安全解析 JSON 字符串
-            try:
-                analysis_data = json.loads(r.result) if r.result else {}
-            except Exception:
-                analysis_data = {}
-
+            try: analysis_data = json.loads(r.result) if r.result else {}
+            except Exception: analysis_data = {}
             history_list.append({
-                "id": r.id,
-                "model": r.model_name,
+                "id": r.id, "model": r.model_name,
                 "time": r.created_at.strftime("%Y-%m-%d %H:%M:%S") if r.created_at else "未知",
                 "result": analysis_data
             })
         return history_list
-    except Exception as e:
-        print(f"❌ 获取历史记录失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        db.close()
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    finally: db.close()
