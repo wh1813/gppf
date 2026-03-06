@@ -2,16 +2,18 @@ from google import genai
 from google.genai import types
 from openai import AsyncOpenAI
 import base64
+import os
 from .base import BaseAIAdapter, StockAnalysisRequest, StockAnalysisResult
 
 class DeepSeekAdapter(BaseAIAdapter):
-    def __init__(self, api_key: str, model: str = "deepseek-v3-2-251201"):
-        # 【核心修改】：替换为火山引擎的代理地址和模型名称
+    def __init__(self, api_key: str, model: str = None):
+        # 【终极修复1】直接硬编码你的 API KEY 和 火山引擎 Base URL，杜绝任何环境变量读取失败
         self.client = AsyncOpenAI(
-            api_key=api_key, 
+            api_key="ae34c09f-5bd2-40b7-9a03-941839441d26", 
             base_url="https://ark.cn-beijing.volces.com/api/v3"
         )
-        self.model_name = model
+        # 【终极修复2】强行写死你指定的模型名称，彻底删掉所有的 ep-xxxxxxxx-xxxx 占位符！
+        self.model_name = "deepseek-v3-2-251201"
     
     async def analyze(self, request: StockAnalysisRequest) -> StockAnalysisResult:
         messages = [
@@ -20,7 +22,6 @@ class DeepSeekAdapter(BaseAIAdapter):
         ]
         
         try:
-            # 兼容火山引擎的调用规范
             response = await self.client.chat.completions.create(
                 model=self.model_name,
                 messages=messages,

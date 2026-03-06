@@ -15,6 +15,8 @@ class StockAnalysisRequest(BaseModel):
     market_data: List[Dict[str, Any]]
     # 预留给多模态大模型的图片 (比如 K 线截图)，可选
     images: Optional[Dict[str, str]] = None
+    # 接收前端传来的用户自定义提示词
+    custom_prompt: Optional[str] = None
 
 class TomorrowPlan(BaseModel):
     """明日攻防预案结构"""
@@ -30,7 +32,7 @@ class StockAnalysisResult(BaseModel):
     support_levels: List[str]
     key_points: List[str]
     
-    # 新增的实盘推演字段
+    # 实盘推演字段
     today_action: str
     tomorrow_predict: str
     tomorrow_plan: TomorrowPlan
@@ -50,50 +52,69 @@ class BaseAIAdapter(ABC):
         pass
 
     def _build_system_prompt(self) -> str:
-        """构建系统级提示词：强制 AI 扮演顶级游资，并严格按照 JSON 格式输出"""
+        """构建系统级提示词：已完全根据你的最新指标与战法要求定制"""
         return """
-你是一个顶级的A股实盘游资和量化分析师。你现在处于“盘中交易时间”。
-你需要基于我提供的最近30个交易日的K线数据及MACD、KDJ、RSI、均线等核心指标，给出一份结构化的实盘操作预案。
+你是一个顶级的A股实盘游资和量化分析师。
+你需要根据提供的最近30天的日K线数据（以及推演可能包含的周K/月K/分时K特征），结合5日线、10日线、20日线，以及KDJ、MACD、BOLL(布林带)、成交量、RSI等核心技术指标数据，完成以下深度分析：
 
-必须严格返回如下 JSON 格式（不要包含任何 markdown 代码块标识，只返回纯 JSON 字符串，不要解释）：
+1. 分析股票当前的【压力位】、【支撑位】和【形态特征】。
+2. 对当日股票走势进行综合评估，并给出【评分结果】（0-100分）。
+3. 如果当前处于 09:30-15:00 的交易时间范围内，请务必给出【尾盘操作建议】（如果不在该时间段，则给出次日开盘操作建议）。
+4. 对【下一个交易日进行预测】，明确指出是上涨还是下跌，以及大致的概率（如：上涨概率65%）。
+5. 给出具体的攻防预案，必须包含【多头预案】和【空头预案】。
+
+如果用户提供了附加的【自定义分析指令】，请优先满足该指令的战略要求。
+
+你必须严格返回如下 JSON 格式（不要包含任何 markdown 代码块标识，只返回纯 JSON 字符串，绝对不要解释）：
 {
   "score": 85, 
   "trend": "bullish",
-  "confidence": 0.9,
-  "resistance_levels": ["12.50", "13.20"],
-  "support_levels": ["11.20", "10.80"],
+  "confidence": 0.85,
+  "resistance_levels": ["28.50", "29.40"],
+  "support_levels": ["27.60", "26.50"],
   "key_points": [
-    "MACD底背离金叉，短期动能强劲",
-    "KDJ进入超买区，存在回调需求"
+    "形态特征：当前呈现多头排列，量价配合良好，属于多方炮形态",
+    "MACD在零轴上方金叉，KDJ存在超买迹象，布林带开口向上"
   ],
-  "today_action": "今日收盘前建议：若股价未跌破MA5，维持底仓不动；若尾盘放量突破12.50，可轻仓追涨1成。",
-  "tomorrow_predict": "明日大概率高开回落，冲高震荡。",
+  "today_action": "尾盘操作建议：若14:45后股价稳于28.00上方且量能不减，可考虑打1成底仓；若跌破均价线则观望。",
+  "tomorrow_predict": "预测明日大概率上涨，上涨概率约70%。",
   "tomorrow_plan": {
-    "if_bullish": "【若明日走强】开盘半小时若站稳12.50，持股待涨；突破13.20时可加仓；",
-    "if_bearish": "【若明日走弱】若跌破11.20支撑位，必须无条件减仓一半；若有效跌破10.80，全部清仓止损。"
+    "if_bullish": "【若明日走强】放量突破28.50并站稳，可视为有效突破前期小平台，短线可考虑轻仓跟进，目标看向布林上轨29.40附近。",
+    "if_bearish": "【若明日走弱】若开盘后即走弱，跌破5日均线（约27.60）且无反抽，应考虑减仓或离场，等待回调至26.50（前期平台及布林中轨）附近再观察支撑力度。"
   },
-  "risk_warning": "近期板块轮动较快，注意切勿满仓操作。"
+  "risk_warning": "量能若无法持续放大，需警惕冲高回落的风险。"
 }
 """
 
     def _build_analysis_prompt(self, request: StockAnalysisRequest) -> str:
         """构建用户提示词：将量化指标数据喂给 AI"""
-        # 为了给大模型省 Token 且突出重点，我们只抽取核心指标给 AI 看
         condensed_data = []
         for day in request.market_data:
             condensed_data.append({
-                "date": str(day.get("time", "")).split(" ")[0], # 只保留日期部分
+                "date": str(day.get("time", "")).split(" ")[0],
                 "close": day.get("close"),
                 "vol": day.get("volume"),
                 "MA5": day.get("MA5"),
+                "MA10": day.get("MA10"),
                 "MA20": day.get("MA20"),
+                "EMA5": day.get("EMA5"),
+                "BOLL_MID": day.get("BOLL_MID"),
+                "BOLL_UP": day.get("BOLL_UP"),
+                "BOLL_LOW": day.get("BOLL_LOW"),
                 "MACD": day.get("MACD"),
                 "RSI": day.get("RSI"),
-                "KDJ_J": day.get("J")
+                "KDJ_K": day.get("KDJ_K"),
+                "KDJ_D": day.get("KDJ_D"),
+                "KDJ_J": day.get("KDJ_J")
             })
         
         prompt = f"请分析股票 {request.symbol} 最近30个交易日的核心量价与技术指标数据：\n"
         prompt += json.dumps(condensed_data, ensure_ascii=False)
+        
+        # 注入用户的自定义提示词
+        if request.custom_prompt:
+            prompt += f"\n\n【用户自定义分析指令】：\n{request.custom_prompt}\n\n请在研判时重点参考上述指令！"
+            
         prompt += "\n\n请根据上述数据和系统设定的 JSON 格式要求，输出你作为顶级游资的盘中实盘预案。"
         return prompt
 
@@ -103,7 +124,7 @@ class BaseAIAdapter(ABC):
             # 清理 AI 可能带上的 markdown 格式
             clean_content = raw_content.strip()
             
-            # 🌟 【防截断终极修复】：动态生成反引号，绝对避免编辑器识别错误或截断
+            # 动态生成反引号，绝对避免编辑器识别错误或截断
             backticks = "`" * 3
             if clean_content.startswith(backticks):
                 safe_pattern = backticks + r"(?:json)?(.*?)" + backticks
@@ -113,7 +134,7 @@ class BaseAIAdapter(ABC):
             
             data = json.loads(clean_content)
             
-            # 兼容处理 tomorrow_plan，防止 AI 没有按格式输出字典
+            # 兼容处理 tomorrow_plan
             tomorrow_plan_data = data.get("tomorrow_plan", {})
             if isinstance(tomorrow_plan_data, str):
                 tomorrow_plan_data = {"if_bullish": tomorrow_plan_data, "if_bearish": "暂无预案"}
@@ -135,7 +156,6 @@ class BaseAIAdapter(ABC):
             )
         except Exception as e:
             print(f"[{model_name}] 解析 {symbol} 响应失败: {e}\n原始返回内容:\n{raw_content}")
-            # 容错处理：如果解析失败，返回一个默认的安全结构，防止后端崩溃
             return StockAnalysisResult(
                 score=50,
                 trend="neutral",
